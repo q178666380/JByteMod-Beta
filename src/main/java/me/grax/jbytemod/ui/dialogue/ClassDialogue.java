@@ -4,10 +4,6 @@ import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.GridLayout;
-import java.awt.event.KeyEvent;
-import java.awt.event.KeyListener;
-import java.beans.PropertyChangeEvent;
-import java.beans.PropertyChangeListener;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -37,9 +33,9 @@ import javax.swing.text.Document;
 import javax.swing.text.NumberFormatter;
 import javax.swing.text.PlainDocument;
 
-import org.jfree.chart.plot.ThermometerPlot;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 
 import me.grax.jbytemod.JByteMod;
@@ -59,8 +55,12 @@ public class ClassDialogue {
       Type.class.getName());
 
   public ClassDialogue(Object object) {
-    this(object, "Edit " + object.getClass().getSimpleName());
+    this(object.getClass(),object);
   }
+  
+  public ClassDialogue(Class<?> pType,Object object) {
+      this(object, "Edit " + pType.getSimpleName());
+    }
 
   public ClassDialogue(Object object, String title) {
     if (object instanceof AbstractCollection<?>) {
@@ -94,8 +94,9 @@ public class ClassDialogue {
         WrappedPanel wp = (WrappedPanel) c;
         Field f = wp.getField();
         if (f != null) {
-          if (isModifiedSpecial(f.getName(), f.getType())) {
-            Object o = getSpecialValue(object, f.getName(), f.getType(), wp.getObject(), wp);
+          Class<?> tType=getFieldRealType(f);
+          if (isModifiedSpecial(f.getName(), tType)) {
+            Object o = getSpecialValue(object, f.getName(), tType, wp.getObject(), wp);
             try {
               f.set(object, o);
             } catch (IllegalArgumentException | IllegalAccessException e) {
@@ -104,9 +105,9 @@ public class ClassDialogue {
             continue;
           }
           Component child = wp.getComponent(0);
-          if (hasNoChilds(f.getType())) {
+          if (hasNoChilds(tType)) {
             try {
-              f.set(object, getValue(f.getType(), child));
+              f.set(object, getValue(tType, child));
             } catch (IllegalArgumentException | IllegalAccessException e) {
               e.printStackTrace();
             }
@@ -185,44 +186,46 @@ public class ClassDialogue {
     rightInput.setLayout(new GridLayout(0, 1));
     addSpecialInputs(object, leftText, rightInput);
     for (Field f : fields) {
+        Class<?> tType=getFieldRealType(f);
       //determine if field has special input method
-      if (isModifiedSpecial(f.getName(), f.getType())) {
+      if (isModifiedSpecial(f.getName(), tType)) {
         try {
           //add special input method
-          rightInput.add(wrap(f, getModifiedSpecial(f.get(object), f.getName(), f.getType())));
+          rightInput.add(wrap(f, getModifiedSpecial(f.get(object), f.getName(), tType)));
         } catch (IllegalArgumentException | IllegalAccessException e) {
           e.printStackTrace();
         }
-      } else if (hasNoChilds(f.getType())) {
+      } else if (hasNoChilds(tType)) {
         try {
           rightInput.add(wrap(f, getComponent(f)));
         } catch (IllegalArgumentException | IllegalAccessException e) {
           e.printStackTrace();
         }
-      } else if (f.getType().isArray() || isList(f)) {
-        JButton edit = new JButton("Edit " + f.getType().getSimpleName());
+      } else if (tType.isArray() || isList(f)) {
+        JButton edit = new JButton("Edit " + tType.getSimpleName());
         edit.addActionListener(e -> {
           try {
             ListEditorTable t = new ListEditorTable(object, f);
             if (t.open()) {
-              f.set(object, f.getType().isArray() ? t.getList().toArray() : t.getList());
+              f.set(object, tType.isArray() ? t.getList().toArray() : t.getList());
             }
           } catch (Exception ex) {
             ex.printStackTrace();
           }
         });
         rightInput.add(wrap(f, edit));
-      } else if (Object.class.isAssignableFrom(f.getType())) {
+      } else if (Object.class.isAssignableFrom(tType)) {
         JPanel panel = new JPanel();
         try {
           Object value = f.get(object);
+          
           panel.setLayout(new BorderLayout());
           JButton edit = new JButton(JByteMod.res.getResource("edit"));
           edit.setToolTipText("Can be null");
           edit.addActionListener(e -> {
             try {
               //should still be the same class type
-              ClassDialogue dialogue = ClassDialogue.this.init(value == null ? f.getType().newInstance() : value);
+              ClassDialogue dialogue = ClassDialogue.this.init(tType,value == null ? tType.newInstance() : value);
               if (dialogue.open()) {
                 f.set(object, dialogue.getObject());
               }
@@ -236,7 +239,7 @@ public class ClassDialogue {
             try {
               if (jcb.isSelected()) {
                 if (f.get(object) == null) {
-                  f.set(object, f.getType().newInstance());
+                  f.set(object, tType.newInstance());
                 }
                 edit.setEnabled(true);
               } else {
@@ -264,7 +267,7 @@ public class ClassDialogue {
           edit.addActionListener(e -> {
             try {
               //should still be the same class type
-              ClassDialogue dialogue = ClassDialogue.this.init(value);
+              ClassDialogue dialogue = ClassDialogue.this.init(tType,value);
               if (dialogue.open()) {
                 f.set(object, dialogue.getObject());
               }
@@ -288,9 +291,53 @@ public class ClassDialogue {
 
     return mainPanel;
   }
+  
+    protected Class<?> getFieldRealType(Field pField){
+        return this.object instanceof FieldNode&&pField.getName().equals("value")
+                ?getTypeFromDesc(((FieldNode)this.object).desc,pField.getType())
+                :pField.getType();
+    }
+  
+    public static Class<?> getTypeFromDesc(String pDesc,Class<?> pDef){
+        int tArrDeep=0;
+        for(int i=0;i<=pDesc.length();i++){
+            if(pDesc.charAt(i)!='['){
+                pDesc=pDesc.substring(i,pDesc.length());
+                break;
+            }else tArrDeep++;
+        }
+        Class<?> tType=pDef;
+
+        if(pDesc.equals("Z")){
+            tType=boolean.class;
+        }else if(pDesc.equals("B")){
+            tType=byte.class;
+        }else if(pDesc.equals("C")){
+            tType=char.class;
+        }else if(pDesc.equals("S")){
+            tType=short.class;
+        }else if(pDesc.equals("I")){
+            tType=int.class;
+        }else if(pDesc.equals("J")){
+            tType=long.class;
+        }else if(pDesc.equals("F")){
+            tType=float.class;
+        }else if(pDesc.equals("D")){
+            tType=double.class;
+        }else if(pDesc.equals("V")){
+            tType=void.class;
+        }else if(pDesc.startsWith("L")&&pDesc.endsWith(";")){
+            try{
+                tType=Class.forName(pDesc.substring(1,pDesc.length()-1).replace('/','.'));
+            }catch(ClassNotFoundException e){
+            }
+        }
+
+        return tArrDeep==0?tType:Array.newInstance(tType,new int[tArrDeep]).getClass();
+    }
 
   private boolean isList(Field f) {
-    if (AbstractCollection.class.isAssignableFrom(f.getType()))
+    if (AbstractCollection.class.isAssignableFrom(getFieldRealType(f)))
       return true;
     try {
       Object o = f.get(object);
@@ -303,6 +350,12 @@ public class ClassDialogue {
   protected ClassDialogue init(Object value) {
     return new ClassDialogue(value);
   }
+  
+  protected ClassDialogue init(Class<?> pType,Object value) {
+      ClassDialogue tDialogue=new ClassDialogue(value);
+      tDialogue.clazz=pType;
+      return tDialogue;
+    }
 
   protected void addSpecialInputs(Object object, JPanel leftText, JPanel rightInput) {
   }
@@ -340,7 +393,7 @@ public class ClassDialogue {
   }
 
   private Component getComponent(Field f) throws IllegalArgumentException, IllegalAccessException {
-    return getComponent(f.getType(), f.get(object));
+    return getComponent(getFieldRealType(f), f.get(object));
   }
 
   protected Component getComponent(Class<?> c, Object o) throws IllegalArgumentException, IllegalAccessException {
@@ -403,7 +456,7 @@ public class ClassDialogue {
     formatter.setValueClass(type);
     formatter.setMinimum((Comparable) minValue);
     formatter.setMaximum((Comparable) maxValue);
-    formatter.setAllowsInvalid(false);
+    formatter.setAllowsInvalid(true);
     formatter.setCommitsOnValidEdit(true);
     formatter.setOverwriteMode(true);
     JFormattedTextField jftf = new JFormattedTextField(formatter);
@@ -469,8 +522,8 @@ public class ClassDialogue {
       } else {
         throw new RuntimeException();
       }
-      if (f.getType().isArray()) {
-        this.type = f.getType().getComponentType();
+      if (getFieldRealType(f).isArray()) {
+        this.type = getFieldRealType(f).getComponentType();
       } else {
         java.lang.reflect.Type type = f.getGenericType();
         if (type instanceof ParameterizedType) {
